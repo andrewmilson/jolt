@@ -24,7 +24,7 @@ pub mod booleanity;
 pub mod hamming_weight;
 pub mod read_raf_checking;
 
-#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Default, Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub struct BytecodePreprocessing {
     pub code_size: usize,
     pub bytecode: Vec<Instruction>,
@@ -69,7 +69,7 @@ impl BytecodePreprocessing {
     }
 }
 
-#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Default, Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub struct BytecodePCMapper {
     /// Stores the mapping of the PC at the beginning of each inline sequence
     /// and the maximum number of the inline sequence
