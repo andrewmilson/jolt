@@ -1,7 +1,6 @@
 use crate::field::{JoltField, OptimizedMul};
 use crate::utils::math::Math;
 use crate::utils::small_scalar::SmallScalar;
-use crate::utils::thread::unsafe_allocate_zero_vec;
 use allocative::Allocative;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rayon::prelude::*;
@@ -23,7 +22,6 @@ pub struct CompactPolynomial<T: SmallScalar, F: JoltField> {
     len: usize,
     pub coeffs: Vec<T>,
     pub bound_coeffs: Vec<F>,
-    binding_scratch_space: Option<Vec<F>>,
 }
 
 impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
@@ -39,7 +37,6 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
             len: coeffs.len(),
             coeffs,
             bound_coeffs: vec![],
-            binding_scratch_space: None,
         }
     }
 
@@ -264,24 +261,22 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
         if self.is_bound() {
             match order {
                 BindingOrder::LowToHigh => {
-                    if self.binding_scratch_space.is_none() {
-                        self.binding_scratch_space = Some(unsafe_allocate_zero_vec(n));
-                    }
-                    let binding_scratch_space = self.binding_scratch_space.as_mut().unwrap();
-
-                    binding_scratch_space
-                        .par_iter_mut()
-                        .take(n)
-                        .enumerate()
-                        .for_each(|(i, new_coeff)| {
-                            if self.bound_coeffs[2 * i + 1] == self.bound_coeffs[2 * i] {
-                                *new_coeff = self.bound_coeffs[2 * i];
-                            } else {
-                                *new_coeff = self.bound_coeffs[2 * i]
-                                    + r * (self.bound_coeffs[2 * i + 1] - self.bound_coeffs[2 * i]);
+                    const CHUNK_SIZE: usize = 512;
+                    let mut bound_coeffs = Vec::with_capacity(n);
+                    (
+                        bound_coeffs.spare_capacity_mut().par_chunks_mut(CHUNK_SIZE),
+                        self.bound_coeffs.par_chunks(2 * CHUNK_SIZE),
+                    )
+                        .into_par_iter()
+                        .for_each(|(bound_coeffs, coeffs)| {
+                            for i in 0..bound_coeffs.len() {
+                                let eval_at_0 = coeffs[i * 2];
+                                let eval_at_1 = coeffs[i * 2 + 1];
+                                bound_coeffs[i].write(fold_mle_evals(r, eval_at_0, eval_at_1));
                             }
                         });
-                    std::mem::swap(&mut self.bound_coeffs, binding_scratch_space);
+                    unsafe { bound_coeffs.set_len(n) };
+                    self.bound_coeffs = bound_coeffs;
                 }
                 BindingOrder::HighToLow => {
                     let (left, right) = self.bound_coeffs.split_at_mut(n);
@@ -296,24 +291,32 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
         } else {
             match order {
                 BindingOrder::LowToHigh => {
-                    self.bound_coeffs = (0..n)
+                    const CHUNK_SIZE: usize = 512;
+                    let _span = tracing::span!(tracing::Level::INFO, "alloc").entered();
+                    let mut bound_coeffs = Vec::with_capacity(n);
+                    drop(_span);
+                    (
+                        bound_coeffs.spare_capacity_mut().par_chunks_mut(CHUNK_SIZE),
+                        self.coeffs.par_chunks(2 * CHUNK_SIZE),
+                    )
                         .into_par_iter()
-                        .map(|i| {
-                            let a = self.coeffs[2 * i];
-                            let b = self.coeffs[2 * i + 1];
-                            match a.cmp(&b) {
-                                Ordering::Equal => a.to_field(),
-                                // a < b: Compute a + r * (b - a)
-                                Ordering::Less => {
-                                    a.to_field::<F>() + b.diff_mul_field::<F>(a, r.into())
-                                }
-                                // a > b: Compute a - r * (a - b)
-                                Ordering::Greater => {
-                                    a.to_field::<F>() - a.diff_mul_field::<F>(b, r.into())
-                                }
+                        .for_each(|(bound_coeffs, coeffs)| {
+                            for i in 0..bound_coeffs.len() {
+                                let a = coeffs[i * 2];
+                                let b = coeffs[i * 2 + 1];
+                                bound_coeffs[i].write(match a.cmp(&b) {
+                                    Ordering::Equal => a.to_field(),
+                                    Ordering::Less => {
+                                        a.to_field::<F>() + b.diff_mul_field::<F>(a, r.into())
+                                    }
+                                    Ordering::Greater => {
+                                        a.to_field::<F>() - a.diff_mul_field::<F>(b, r.into())
+                                    }
+                                });
                             }
-                        })
-                        .collect();
+                        });
+                    unsafe { bound_coeffs.set_len(n) };
+                    self.bound_coeffs = bound_coeffs;
                 }
                 BindingOrder::HighToLow => {
                     let (left, right) = self.coeffs.split_at(n);
@@ -345,6 +348,11 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
         assert_eq!(self.len, 1);
         self.bound_coeffs[0]
     }
+}
+
+/// Computes `eq(0, r) * eval0 + eq(1, r) * eval1`.
+fn fold_mle_evals<F: JoltField>(r: F::Challenge, eval0: F, eval1: F) -> F {
+    (eval1 - eval0) * r + eval0
 }
 
 impl<T: SmallScalar, F: JoltField> Clone for CompactPolynomial<T, F> {

@@ -114,11 +114,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
 
     #[tracing::instrument(skip_all, name = "InstructionHammingWeight::bind")]
     fn bind(&mut self, r_j: F::Challenge, _round: usize) {
-        self.prover_state
-            .as_mut()
-            .unwrap()
+        let prover_state = self.prover_state.as_mut().unwrap();
+        prover_state
             .ra
-            .par_iter_mut()
+            .iter_mut()
             .for_each(|ra| ra.bind_parallel(r_j, BindingOrder::LowToHigh))
     }
 

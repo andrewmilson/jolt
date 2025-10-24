@@ -99,6 +99,7 @@ jolt-sdk = { workspace = true, features = ["host"] }
 jolt-core = { workspace = true, features = ["default"] }
 tracer = { workspace = true, features = ["default"] }
 common = { workspace = true, features = ["std"] }
+jemallocator = "0.5.4"
 
 [profile.test]
 opt-level = 3
